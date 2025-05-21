@@ -134,4 +134,4 @@ Typical errors & fixes
 ---
 
 ## License
-MIT © <Your Name>
+MIT © Hamid Jamali

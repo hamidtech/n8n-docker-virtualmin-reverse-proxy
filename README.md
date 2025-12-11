@@ -1,137 +1,221 @@
-# n8n + Docker + Virtualmin + Cloudflare
+# n8n + Docker Compose + Virtualmin + Cloudflare
 Full Reverse‑Proxy Setup with WebSockets, OAuth & Telegram Support  
-*Last updated: May 2025 — by *Hamid Jamali***
+*Last updated: December 2025 — by *Hamid Jamali***
 
 ---
 
-## Table of Contents
-1. [Prerequisites](#prerequisites)  
-2. [Run n8n in Docker](#runn8nindocker)  
-3. [Configure Apache (Virtualmin)](#configureapachevirtualmin)  
-4. [Configure Cloudflare](#configurecloudflare)  
-5. [Testing & Troubleshooting](#testing--troubleshooting)  
-6. [Telegram & OAuth Notes](#telegram--oauth-notes)  
-7. [Maintenance & Safety Tips](#maintenance--safety-tips)  
-8. [License](#license)
+# n8n Production Setup — Docker Compose + Apache Reverse Proxy + Cloudflare  
+A secure, scalable, and upgrade-safe deployment of n8n using Docker Compose, Apache, and Cloudflare.
 
 ---
 
-## Prerequisites
-| Item | Notes |
-|------|-------|
-| Ubuntu 22.04 / 24.04 | or any distro with **Apache ≥ 2.4.5** |
+## 📌 Overview
+This repository provides a production-ready setup for hosting **n8n** behind:
+
+- Docker Compose  
+- Apache Reverse Proxy  
+- Cloudflare Proxy (optional but recommended)
+
+It includes correct handling for:
+
+- WebSockets  
+- OAuth Redirect URLs  
+- Telegram Webhooks  
+- HTTPS Enforcement  
+- Persistent data volumes  
+
+---
+
+## 📁 Folder Structure
+
+````
+
+/opt/n8n/
+│── docker-compose.yml
+│── .env
+│── data/              # persistent n8n database + config
+└── local-files/       # binary uploads, attachments, temp files
+
+````
+
+---
+
+## ✅ Prerequisites
+
+| Component | Notes |
+|----------|-------|
 | Docker Engine | `sudo apt install docker.io -y` |
-| Virtualmin / Webmin | to manage Apache vhosts |
-| Cloudflare (optional but recommended) | proxy + free SSL |
+| Docker Compose v2+ | Included with modern Docker |
+| Apache ≥ 2.4.5 | Required for reverse proxy |
+| Cloudflare (optional) | SSL termination + protection |
+| Ports | `22`, `80`, `443` must be open |
 
-> **Open firewall ports:** `22`, `80`, `443`. The internal n8n port (`5678`) should **not** be exposed to the Internet.
+⚠️ **Do NOT expose port 5678 publicly**.  
+n8n must always run behind Apache or another reverse proxy.
 
 ---
 
-## Run n8n in Docker
+## 🚀 Installation
+
 ```bash
-docker run -d --name n8n \
-  -p 5678:5678 \
-  -e N8N_PORT=5678 \
-  -e N8N_PROTOCOL=https \
-  -e N8N_HOST=<your-domain> \
-  -e WEBHOOK_URL=https://<your-domain>/ \
-  -e WEBHOOK_TUNNEL_URL=https://<your-domain>/ \
-  -e VUE_APP_URL_BASE_API=https://<your-domain> \
-  docker.n8n.io/n8nio/n8n
+sudo mkdir -p /opt/n8n/{data,local-files}
+sudo chown -R 1000:1000 /opt/n8n
+cd /opt/n8n
+docker compose up -d
 ```
-### Why these ENV vars?
-| Variable | Purpose |
-|----------|---------|
-| `N8N_PORT` | Container’s internal listening port |
-| `N8N_PROTOCOL=https` | Forces https in generated URLs |
-| `N8N_HOST` | Your public domain (no port) |
-| `WEBHOOK_*` | Generates valid webhook URLs for Telegram etc. |
-| `VUE_APP_URL_BASE_API` | Front‑end knows API base path |
+
+Visit:
+
+```
+https://your-domain.com
+```
 
 ---
 
-## Configure Apache (Virtualmin)
-File: `/etc/apache2/sites-enabled/<your-domain>.conf`
+## 🔧 Environment Configuration
 
-### 1 – enable required modules
+Environment variables are defined in `.env`.
+
+Key variables explained:
+
+| Variable               | Purpose                                  |
+| ---------------------- | ---------------------------------------- |
+| `N8N_HOST`             | Public domain (no port)                  |
+| `N8N_PROTOCOL`         | Must be `https` when using reverse proxy |
+| `WEBHOOK_URL`          | External webhook address                 |
+| `GENERIC_TIMEZONE`     | Local timezone                           |
+| `N8N_BINARY_DATA_MODE` | Store uploads on filesystem              |
+| `N8N_ENCRYPTION_KEY`   | Required for credential encryption       |
+
+A `.env.example` file is provided in this repo.
+
+---
+
+## 🐳 Docker Compose Setup
+
+* Automatically restarts on failure
+* Persists workflows + database in `data/`
+* Stores binary assets in `local-files/`
+
+See `docker-compose.yml` in this repo.
+
+---
+
+## 🌐 Apache Reverse Proxy Configuration
+
+Enable modules:
+
 ```bash
-sudo a2enmod proxy proxy_http proxy_wstunnel headers
+sudo a2enmod proxy proxy_http proxy_wstunnel headers rewrite
 sudo systemctl restart apache2
 ```
 
-### 2 – HTTPS vhost (`:443`)
+Use the provided file `apache-n8n.conf`:
+
 ```apache
 ProxyPreserveHost On
 RequestHeader set Connection "upgrade"
 RequestHeader set Upgrade "websocket"
 
-# WebSocket route – MUST come first
+# WebSocket route — MUST come first
 ProxyPass "/rest/push" "ws://localhost:5678/rest/push" upgrade=websocket
 ProxyPassReverse "/rest/push" "ws://localhost:5678/rest/push"
 
-# All other traffic
-ProxyPass / http://localhost:5678/
-ProxyPassReverse / http://localhost:5678/
+# Main traffic
+ProxyPass "/" "http://localhost:5678/"
+ProxyPassReverse "/" "http://localhost:5678/"
 
-# Let’s Encrypt challenge
-ProxyPass /.well-known !
+# Allow Let's Encrypt
+ProxyPass "/.well-known/" "!"
 ```
 
-### 3 – HTTP vhost (`:80`)
+HTTP → HTTPS redirect:
+
 ```apache
 RewriteEngine On
 RewriteRule ^/?(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
 ```
 
-> **DO NOT** swap the order of `ProxyPass` lines — WebSocket must be above `/`, otherwise connections drop with `code 1006`.
+---
+
+## ☁️ Cloudflare Configuration
+
+| Setting              | Value                 |
+| -------------------- | --------------------- |
+| Proxy (Orange Cloud) | ON                    |
+| SSL Mode             | Full or Full (Strict) |
+| WebSockets           | Enabled               |
+| Always Use HTTPS     | Enabled               |
+
+⚠️ **Do NOT use Flexible SSL** → causes redirect loops.
 
 ---
 
-## Configure Cloudflare
-| Setting | Value |
-|---------|-------|
-| Proxy Status | ☁️ **Orange Cloud** (ON) |
-| SSL/TLS Mode | **Full** or **Full (Strict)** |
-| WebSockets | **Enabled** |
+## 🧪 Testing
 
-> **DO NOT** use **Flexible SSL** — it causes redirect loops.
+### Check container:
 
----
+```bash
+docker compose ps
+docker compose logs -f
+```
 
-## Testing & Troubleshooting
-| Check | Command |
-|-------|---------|
-| Container running | `docker ps` / `docker logs n8n` |
-| Local reachability | `curl -i http://localhost:5678` (*expect 200*) |
-| Apache error log | `tail -f /var/log/virtualmin/<your-domain>_error_log` |
-| WebSocket status | Browser DevTools → Network → **WS** → `/rest/push` should show **101 Switching Protocols** |
+### Check local service:
 
-Typical errors & fixes  
-* **Connection refused** → wrong port in Apache rules, or container down.  
-* **code 1006** loop → WebSocket rule below `/`, or `proxy_wstunnel` not enabled.
+```bash
+curl -I http://localhost:5678
+```
 
----
+### Check WebSocket:
 
-## Telegram & OAuth Notes
-* Telegram accepts webhooks **only on ports 80 / 443 / 88 / 8443**. Because Apache serves on 443, this setup is compliant.
-* Use this single Redirect URL for any OAuth provider (Twitter/X, Google, …):
-  ```
-  https://<your-domain>/rest/oauth2-credential/callback
-  ```
-* Never include `:5678` (or any other port) in public URLs.
+Browser → DevTools → Network → WS → `/rest/push`
+
+Status must be:
+
+```
+101 Switching Protocols
+```
 
 ---
 
-## Maintenance & Safety Tips
-| Do | Don’t |
-|----|-------|
-| `docker pull docker.n8n.io/n8nio/n8n` then restart to update | Expose port 5678 to the Internet |
-| Mount a volume for `/home/node/.n8n` to persist data | Change Apache config without `apachectl configtest` |
-| Rotate/clean logs regularly | Enable Cloudflare *Flexible* SSL |
-| Take snapshots/backups before major upgrades | Re‑order ProxyPass lines randomly |
+## 🔐 OAuth & Telegram Notes
+
+### OAuth callback URL:
+
+```
+https://your-domain.com/rest/oauth2-credential/callback
+```
+
+### Telegram webhook ports allowed:
+
+`443`, `80`, `88`, `8443`
+
+This setup supports Telegram natively.
 
 ---
 
+## 🔄 Updating n8n
+
+```bash
+cd /opt/n8n
+docker compose pull
+docker compose down
+docker compose up -d
+```
+
+All workflows and data remain safe.
+
+---
+
+## 🛡 Maintenance Checklist
+
+✔ Back up `/opt/n8n/data/` weekly
+✔ Back up `.env`
+✔ Run `apachectl configtest` before enabling config
+✔ Never expose port `5678`
+✔ Use Cloudflare Full SSL
+
+
+---
 ## License
 MIT © Hamid Jamali
